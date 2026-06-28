@@ -29,11 +29,14 @@ eval "$(/opt/homebrew/bin/brew shellenv)"
 
 ```bash
 brew install ffmpeg tesseract
+brew install exiftool librsvg        # optional: photo EXIF metadata; render SVGs to PNG
 brew install --cask libreoffice      # only if you have legacy .doc/.ppt or binary .xlsb files
 ```
 
 - **ffmpeg** (with `ffprobe`) — reads audio out of videos and detects silent clips.
 - **tesseract** — free local OCR for images.
+- **exiftool** *(optional)* — adds capture date / camera / GPS to photo `.md` files.
+- **librsvg** *(optional)* — renders each SVG to a companion PNG so Claude can see it as a picture.
 - **LibreOffice** — converts legacy `.doc`/`.ppt` and binary `.xlsb`. Skip it if you have none of those.
 
 ## Step 3 — Python environment
@@ -84,6 +87,8 @@ source ~/md-convert-env/bin/activate
 | Homebrew | curl script | installing the tools below |
 | ffmpeg / ffprobe | `brew install ffmpeg` | audio extraction; silent-video detection |
 | tesseract | `brew install tesseract` | OCR of images |
+| exiftool *(optional)* | `brew install exiftool` | photo EXIF (date, camera, GPS) |
+| librsvg *(optional)* | `brew install librsvg` | render SVG → companion PNG |
 | LibreOffice | `brew install --cask libreoffice` | legacy `.doc`/`.ppt`, binary `.xlsb` |
 | Python 3.13 + venv | `brew install python@3.13` | isolated runtime for the Python tools |
 | markitdown | `pip install` | documents → Markdown |
@@ -141,8 +146,8 @@ The "unauthenticated requests to the HF Hub" message during download is harmless
 - **pages:** modern `.pages` is a zip bundle, so the embedded `QuickLook/Preview.pdf` is used (needs "Include preview in document" to have been on when saved — the default).
 - **json:** pretty-printed inside a fenced block (still fully searchable).
 - **url:** the shortcut's `URL=` line becomes a Markdown link.
-- **jpg / jpeg / png:** the image is copied next to its `.md` and **embedded** (`![name](<name>)`), plus a dimensions line and OCR'd text (tesseract). The embedded image lets Claude *see* it at query time.
-- **svg:** embedded the same way, plus extracted text labels.
+- **jpg / jpeg / png:** the image is copied next to its `.md` and **embedded** (`![name](<name>)`), plus a dimensions line, **EXIF photo metadata** (capture date, camera, GPS — if exiftool is installed), and OCR'd text (tesseract). The embedded image lets Claude *see* it at query time.
+- **svg:** embedded the same way, plus a **rendered companion PNG** (if librsvg is installed, so Claude sees it as a picture) and extracted text labels.
 - **otf / ttf / ttc:** metadata only (family, style, version, glyph count) — fonts hold glyph outlines, not document text.
 - **Audio/Video** — mp4, mov, m4v, mkv, avi, webm, mp3, m4a, wav, aac, flac: transcribed on-device with `mlx-whisper`. Silent clips (no audio stream) get a short stub instead of erroring.
 - **zip:** extracted to a temp dir, then converted recursively into a folder named after the archive (e.g. `archive.zip/`), preserving internal structure and handling nested zips.
@@ -160,16 +165,16 @@ A converted image `.md` looks like:
 <extracted text…>
 ```
 
-## Incremental & resumable
+## Change detection (content hash)
 
-Re-running is cheap and safe:
+Re-running is cheap and safe. Change detection is by **content hash** — there is no timestamp mode.
 
-- **Skips unchanged files.** A file is skipped when its `.md` already exists, is non-empty, and is newer than the source (make-style freshness), shown as `== path (up to date, skipped)`. This matters most for videos — no re-transcribing an hour of footage every run.
-- **Reconverts edited files automatically.** Editing a source updates its timestamp, so only that file reconverts. Zips are checked at the archive level (skipped if unchanged; wiped and cleanly re-extracted if changed).
-- **Deletes partial/failed output.** On any failure (nonzero exit *or* a zero-byte file) the `.md` is removed. Because the failed file has no valid output, the freshness check retries it next run while completed files keep skipping. A real failure also surfaces the underlying tool's own message (e.g. markitdown's "include the optional dependency `[xls]`").
-- **Force a full rebuild:** `FORCE=1 ./convert_to_markdown.sh in out`.
-
-> **Timestamp caveat:** freshness uses file modification times. Editing in place works. But re-copying or re-syncing the whole project can reset every mtime to "now," making the script reconvert everything (safe, just not optimal). If your workflow does that and you want bulletproof change-detection, switch the skip check to a content hash (store each source's hash and skip only when it matches).
+- **How it works.** On every run each source file is hashed (SHA-256) and compared with the hash recorded from its last successful conversion. Those hashes are stored in `.convert_hashes` at the root of the output folder. A file is converted only when its output is missing or empty, or its content has actually changed (shown as `-> path`); otherwise it is skipped (`== path (unchanged, skipped)`). Zips are checked at the archive level — skipped if unchanged, wiped and cleanly re-extracted if changed.
+- **Why hashing, not timestamps.** Modification times are unreliable: copying, syncing, restoring from backup, or unzipping all reset them, which would otherwise force a needless full reconvert. Hashing ignores mtime entirely and reconverts strictly on real content change, so detection stays correct even after you move or re-sync the whole project.
+- **Trade-off.** Every file is read in full to hash it on each run, so large media are re-hashed each run. That is still far cheaper than re-transcribing them, and only changed files are actually reconverted. (`shasum` ships with macOS and is required; if neither `shasum` nor `sha256sum` is found, the script warns and falls back to reconverting everything each run.)
+- **Atomic writes.** Each `.md` is built in a temp file and renamed into place only on success, so an interrupted run never leaves a half-written output that a later run mistakes for finished.
+- **Deletes partial/failed output.** On any failure (nonzero exit *or* a zero-byte file) the `.md` is removed, so it retries next run while completed files keep skipping. A real failure also surfaces the underlying tool's own message (e.g. markitdown's "include the optional dependency `[xls]`").
+- **Force a full rebuild:** `FORCE=1 ./convert_to_markdown.sh in out` reconverts everything and rewrites the manifest.
 
 ## Detailed end-of-run report
 
@@ -191,13 +196,13 @@ Failed files (2):
 Output: /path/to/output
 ```
 
-Skipped reasons: up to date / unsupported / archive up to date. Failed reasons: needs LibreOffice, no embedded preview, empty output, transcription failed, unzip failed. Files inside an archive are shown with their full path so you can find them.
+Skipped reasons: unchanged / unsupported / archive unchanged. Failed reasons: needs LibreOffice, no embedded preview, empty output, transcription failed, unzip failed. Files inside an archive are shown with their full path so you can find them. The same report is also saved to `_conversion_report.txt` in the output folder, so the full lists survive even when they scroll past in the terminal.
 
 ## Safety checks
 
-The script fails fast or warns on common mistakes: it errors if the input folder is missing or if the **output folder is inside the input** (which would otherwise re-ingest its own `.md` output); it prints a **preflight heads-up** listing any missing tools; and LibreOffice conversions use an **isolated profile**, so `.doc`/`.ppt`/`.xlsb` still convert even when you have the LibreOffice app open.
+The script fails fast or warns on common mistakes: it errors if the input folder is missing or if the **output folder is inside the input** (which would otherwise re-ingest its own `.md` output); it prints a **preflight heads-up** listing any missing tools; LibreOffice conversions use an **isolated profile**, so `.doc`/`.ppt`/`.xlsb` still convert even when you have the LibreOffice app open; **hidden/dot directories** (`.git`, `.vscode`, `.DS_Store`, macOS zip cruft, etc.) are pruned rather than converted; and each `.md` is written to a temp file and **atomically renamed** into place, so an interrupted run never leaves a half-written output that later gets mistaken for "done."
 
-A few edge cases are knowingly left as-is: a *failure inside an unchanged archive* isn't retried unless the archive changes or you pass `FORCE=1`; interrupting a transcription with Ctrl-C may leave a stray `.txt`; old bundle-style `.pages` (a folder rather than a single file) isn't handled; and symlinked files are not followed.
+A few edge cases are knowingly left as-is: a *failure inside an unchanged archive* isn't retried unless the archive changes or you pass `FORCE=1`; interrupting a *transcription* with Ctrl-C may leave a stray `.txt` in the output (harmless, not re-ingested); old bundle-style `.pages` (a folder rather than a single file) isn't handled; symlinked files are not followed; and **deleted or renamed source files leave their old `.md` orphaned** in the output (the tool only adds and updates — it never deletes outputs for sources that vanished). If your corpus churns and you want orphans cleaned, that can be added as an opt-in `CLEAN=1` pass.
 
 ## Caveats
 
@@ -291,14 +296,16 @@ Lowest tokens (RAG) and highest accuracy (full context) pull in opposite directi
 
 ---
 
-# Part 5 — Optional enhancements
+# Part 5 — Tuning & toggles
 
-If you want them later, each is a clean add-on to the script:
+These started as optional add-ons and are now built in:
 
-- **EXIF / photo metadata** (capture date, camera, GPS) for real photos — `brew install exiftool`, then an exiftool block in the image branch.
-- **SVG rasterization** so Claude sees diagrams as pictures (not just XML) — `brew install librsvg`, render a companion `.png` per SVG.
-- **Content-hash change detection** instead of timestamps — bulletproof if your workflow re-copies or re-syncs the project (which resets mtimes).
-- **Write the report to a file** (e.g. `_conversion_report.txt` in the output folder) in addition to the terminal — handy when the skipped list runs long on a big corpus.
+- **EXIF / photo metadata** — automatic when `exiftool` is installed (`brew install exiftool`); adds capture date, camera, and GPS to photo `.md` files.
+- **SVG rasterization** — automatic when `librsvg` is installed (`brew install librsvg`); renders a companion PNG per SVG so Claude sees diagrams as pictures, not just XML.
+- **Content-hash change detection** — always on. Each run hashes every source (SHA-256), stores the hashes in `.convert_hashes`, and reconverts only changed or missing files. See *Change detection* above for the trade-off.
+- **Report file** — always written to `_conversion_report.txt` in the output folder, in addition to the terminal.
+
+Still genuinely optional (ask if you want them): OCR language packs for non-English images (`brew install tesseract-lang`, then set a language in the script), or a `CLEAN=1` pass that deletes outputs whose source was removed or renamed.
 
 ---
 
