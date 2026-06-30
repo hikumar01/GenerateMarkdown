@@ -1,6 +1,6 @@
 # Querying a Local, Mixed-Format Project with Claude — Complete Guide
 
-A project folder of mixed files — **PDF, video, Word (.doc/.docx), Excel (.xls/.xlsx/.xlsm/.xlsb), PowerPoint (.ppt/.pptx), RTF, Apple Pages, JSON, images (jpg/png/svg), fonts, plain text, and zip archives** — not in git, with no skills, memory, or `CLAUDE.md`, that rarely changes. This turns it into something you can ask specific questions about with Claude on a **Pro/Max subscription**, while keeping cost and latency low.
+A project folder of mixed files — **PDF, video, Word (.doc/.docx), Excel (.xls/.xlsx/.xlsm/.xlsb), PowerPoint (.ppt/.pptx), RTF, Apple Pages, JSON, images/design files (jpg/png/tif/heic/svg/ai/eps/psd/xd/fig), fonts, plain text, OneNote export notes, and zip archives** — not in git, with no skills, memory, or `CLAUDE.md`, that rarely changes. This turns it into something you can ask specific questions about with Claude on a **Pro/Max subscription**, while keeping cost and latency low.
 
 **Two stages:** (1) convert everything to Markdown once, locally and free; (2) point Claude at the Markdown and ask. The conversion runs on your machine only — **no Claude usage**. Your subscription is spent only at query time.
 
@@ -30,6 +30,7 @@ eval "$(/opt/homebrew/bin/brew shellenv)"
 ```bash
 brew install ffmpeg tesseract
 brew install exiftool librsvg        # optional: photo EXIF metadata; render SVGs to PNG
+brew install imagemagick ghostscript # optional: render AI/EPS/PSD and odd image formats
 brew install --cask libreoffice      # only if you have legacy .doc/.ppt or binary .xlsb files
 ```
 
@@ -37,6 +38,7 @@ brew install --cask libreoffice      # only if you have legacy .doc/.ppt or bina
 - **tesseract** — free local OCR for images.
 - **exiftool** *(optional)* — adds capture date / camera / GPS to photo `.md` files.
 - **librsvg** *(optional)* — renders each SVG to a companion PNG so Claude can see it as a picture.
+- **ImageMagick + Ghostscript** *(optional)* — renders all pages/frames/scenes it can expose from TIFF/HEIC edge cases, AI/EPS, and PSD files.
 - **LibreOffice** — converts legacy `.doc`/`.ppt` and binary `.xlsb`. Skip it if you have none of those.
 
 ## Step 3 — Python environment
@@ -89,6 +91,7 @@ source ~/md-convert-env/bin/activate
 | tesseract | `brew install tesseract` | OCR of images |
 | exiftool *(optional)* | `brew install exiftool` | photo EXIF (date, camera, GPS) |
 | librsvg *(optional)* | `brew install librsvg` | render SVG → companion PNG |
+| ImageMagick / Ghostscript *(optional)* | `brew install imagemagick ghostscript` | render HEIC/TIFF fallbacks, AI/EPS, PSD pages/frames/scenes |
 | LibreOffice | `brew install --cask libreoffice` | legacy `.doc`/`.ppt`, binary `.xlsb` |
 | Python 3.13 + venv | `brew install python@3.13` | isolated runtime for the Python tools |
 | markitdown | `pip install` | documents → Markdown |
@@ -147,7 +150,12 @@ The "unauthenticated requests to the HF Hub" message during download is harmless
 - **json:** pretty-printed inside a fenced block (still fully searchable).
 - **url:** the shortcut's `URL=` line becomes a Markdown link.
 - **jpg / jpeg / png:** the image is copied next to its `.md` and **embedded** (`![name](<name>)`), plus a dimensions line, **EXIF photo metadata** (capture date, camera, GPS — if exiftool is installed), and OCR'd text (tesseract). The embedded image lets Claude *see* it at query time.
+- **tif / tiff / heic / heif / hei:** rendered to one PNG per page/frame when the local tools expose multiple images, then embedded in Markdown with metadata and OCR per render.
 - **svg:** embedded the same way, plus a **rendered companion PNG** (if librsvg is installed, so Claude sees it as a picture) and extracted text labels.
+- **ai / eps:** rendered to one PNG per page/artboard when ImageMagick/Ghostscript can read the file, then OCR'd. Illustrator text saved as outlines may only be searchable through OCR.
+- **psd:** renders every composite/layer scene ImageMagick exposes, with metadata and OCR per render. Layer names and editable layer structure are not guaranteed; export a layered design to PDF/SVG/PNG from Photoshop when exact semantics matter.
+- **xd / fig:** copied next to a generated Markdown note. The script tries to render every locally visible page/frame, and if the file is a zip-readable package, extracts a structured design summary from JSON-like internals (`.json`, `.agc`, etc.): text strings, named objects/frames/components, colors, asset references, embedded package image assets, package inventory, and bounded raw snippets for traceability. For full design fidelity, export from the source app as PDF, PNG, SVG, or HTML and rerun the converter.
+- **one / onetoc2:** OneNote files are proprietary binary notebook containers. The script writes a Markdown note explaining the limitation; export the notebook or section from OneNote as PDF, DOCX, or HTML for full text conversion.
 - **otf / ttf / ttc:** metadata only (family, style, version, glyph count) — fonts hold glyph outlines, not document text.
 - **Audio/Video** — mp4, mov, m4v, mkv, avi, webm, mp3, m4a, wav, aac, flac: transcribed on-device with `mlx-whisper`. Silent clips (no audio stream) get a short stub instead of erroring.
 - **zip:** extracted to a temp dir, then converted recursively into a folder named after the archive (e.g. `archive.zip/`), preserving internal structure and handling nested zips.
