@@ -1,12 +1,38 @@
-# Querying a Local, Mixed-Format Project with Claude — Complete Guide
+# Local Markdown Converter
 
-A project folder of mixed files — **PDF, video, Word (.doc/.docx), Excel (.xls/.xlsx/.xlsm/.xlsb), PowerPoint (.ppt/.pptx), RTF, Apple Pages, JSON, images/design files (jpg/png/tif/heic/svg/ai/eps/psd/xd/fig), fonts, plain text, OneNote export notes, and zip archives** — not in git, with no skills, memory, or `CLAUDE.md`, that rarely changes. This turns it into something you can ask specific questions about with Claude on a **Pro/Max subscription**, while keeping cost and latency low.
+Convert a local mixed-format project into a self-contained Markdown corpus that Claude, Claude Code, Cowork, or another Markdown-oriented reader can search and reason over. The converter handles **PDF, video, Word (.doc/.docx), Excel (.xls/.xlsx/.xlsm/.xlsb), PowerPoint (.ppt/.pptx), RTF, Apple Pages, JSON, images/design files (jpg/png/tif/heic/svg/ai/eps/psd/xd/fig), fonts, plain text, OneNote export notes, and zip archives**.
 
-**Two stages:** (1) convert everything to Markdown once, locally and free; (2) point Claude at the Markdown and ask. The conversion runs on your machine only — **no Claude usage**. Your subscription is spent only at query time.
+The conversion runs on your machine only. Claude usage starts later, when you point Claude at the generated Markdown folder and ask questions.
+
+## Architectural contract
+
+- **Local-first:** source files are converted locally; no project content is sent to Claude by the converter.
+- **Deterministic orchestration:** Python owns walking, hashing, manifest state, safe archive extraction, atomic writes, reporting, and dispatch.
+- **Specialized tools stay specialized:** markitdown, LibreOffice, ImageMagick, Tesseract, ExifTool, fonttools, psd-tools, and mlx-whisper are used where they are stronger than hand-rolled parsing.
+- **Capabilities are centralized:** supported extensions, handlers, required tools, optional tools, and format descriptions live in `markdown_converter/capabilities.py`.
+- **Failures are structured:** conversion failures carry stable error codes so reports are easier to triage and future automation can act on them.
+- **Archives are conservative:** zip files are extracted through a safety policy and are marked complete only after all recursive conversions succeed.
+
+## Quick start
+
+```bash
+brew install python@3.13 ffmpeg tesseract
+brew install exiftool librsvg imagemagick ghostscript
+brew install --cask libreoffice
+
+python3.13 -m venv ~/md-convert-env
+source ~/md-convert-env/bin/activate
+pip install --upgrade pip
+pip install -e '.[apple-silicon-transcription,design]'
+
+convert-to-markdown "/path/to/project" "/path/to/output"
+```
+
+Use `convert-to-markdown --force in out` to rebuild everything even when hashes are unchanged.
 
 ---
 
-# Part 1 — One-time setup (macOS)
+# Part 1 — Install the Converter (macOS)
 
 Do this once. Everything below is free and local. Assumes an Apple-Silicon Mac (M1/M2/M3/M4); Intel notes are called out.
 
@@ -55,28 +81,37 @@ pip install --upgrade pip
 ## Step 4 — Python packages
 
 ```bash
-pip install 'markitdown[pdf,docx,pptx,xlsx,xls]' mlx-whisper fonttools
+pip install -e '.[apple-silicon-transcription,design]'
 ```
 
 - **markitdown** — PDF, Word, Excel, PowerPoint, HTML, CSV → Markdown.
-- **mlx-whisper** — on-device speech-to-text for audio/video (Apple Silicon). **Intel Mac:** use `pip install openai-whisper` instead, and change `mlx_whisper` to `whisper` in the script (near-identical flags).
+- **mlx-whisper** — on-device speech-to-text for audio/video (Apple Silicon). **Intel Mac:** use `pip install openai-whisper` instead, and change the media converter command if you want to use `whisper` instead.
 - **fonttools** — reads font metadata.
+- **psd-tools** *(optional `design` extra)* — extracts PSD layer names and basic layer geometry when possible.
 
-## Step 5 — The script
+The Python dependencies live in `pyproject.toml`. For a smaller install without audio transcription or PSD layer inspection, use `pip install -e .`.
 
-Save `convert_to_markdown.sh` somewhere convenient and make it executable:
+For repeatable installs, see `REPRODUCIBILITY.md`. The project uses `pyproject.toml` as the dependency source of truth and documents how to generate a per-machine `requirements-lock.txt` from a clean environment.
+
+## Step 5 — The converter
+
+The project installs a console command named `convert-to-markdown`:
 
 ```bash
-chmod +x convert_to_markdown.sh
+convert-to-markdown --help
 ```
+
+If you do not install the project in editable mode, keep `convert_to_markdown.py` and the `markdown_converter/` package folder together and run `python convert_to_markdown.py --help` instead.
 
 ## Step 6 — Verify
 
-Run it on a tiny test (see Part 2). The script also performs a **preflight check** at startup and will warn you, by name, about any tool it can't find — so if you forgot to activate the venv, you'll see exactly that rather than a wall of errors.
+Run it on a tiny test (see Part 2). The Python converter performs a **preflight check** at startup and will warn you, by name, about any missing required converter tool — so if you forgot to activate the venv, you'll see exactly that rather than a wall of errors.
+
+Preflight is corpus-aware: it scans the input tree first and warns only about required or optional helpers relevant to extensions actually present in that corpus.
 
 ## Re-activating in new terminal sessions
 
-A venv applies only to the terminal that activated it. In each new terminal, before running the script:
+A venv applies only to the terminal that activated it. In each new terminal, before running the converter:
 
 ```bash
 source ~/md-convert-env/bin/activate
@@ -97,10 +132,44 @@ source ~/md-convert-env/bin/activate
 | markitdown | `pip install` | documents → Markdown |
 | mlx-whisper | `pip install` | audio/video → transcript |
 | fonttools | `pip install` | font metadata |
+| psd-tools *(optional)* | `pip install -e '.[design]'` | PSD layer inventory |
+
+## File layout
+
+```text
+pyproject.toml              # package metadata, dependencies, extras, console script
+REPRODUCIBILITY.md          # repeatable install policy and lock-generation workflow
+convert_to_markdown.py      # Python CLI entrypoint
+markdown_converter/         # conversion package
+  archive.py                # safe zip extraction policy
+  capabilities.py           # supported extensions, converter capabilities, tool requirements
+  cli.py                    # argument parsing and input validation
+  config.py                 # environment-backed runtime settings
+  core.py                   # walking, hashing, manifest, report, zip recursion
+  converters.py             # registry facade over domain-specific handlers
+  errors.py                 # structured conversion error codes
+  handlers/                 # document, text, design, visual, and media handlers
+  package_extraction.py     # XD/FIG structured JSON/XML/SVG extraction
+  manifest.py               # SHA-256 manifest read/write
+  report.py                 # final conversion report
+  tools.py                  # subprocess/tool discovery helpers
+```
+
+## Architecture overview
+
+| Layer | Owns | Notes |
+|---|---|---|
+| CLI (`cli.py`) | arguments, path validation | Keeps user input validation outside conversion logic. |
+| Settings (`config.py`) | force mode and runtime knobs | Environment variables remain fallback configuration. |
+| Core (`core.py`) | traversal, hashing, archive recursion, atomic writes | Does not know format internals. |
+| Capabilities (`capabilities.py`) | extension support, handler mapping, tool requirements | The first place to edit when adding a format. |
+| Handlers (`handlers/`) | actual format conversion | Each handler returns a `ConverterResult`, not ad hoc status strings. |
+| Archive policy (`archive.py`) | safe zip validation and extraction | Rejects traversal, symlinks, encrypted entries, and oversized archives. |
+| Reports (`report.py`, `errors.py`) | stable failure reporting | Uses structured error codes for triage. |
 
 ---
 
-# Part 2 — Convert the project
+# Part 2 — Run Conversion
 
 ## Test with one file first
 
@@ -118,11 +187,23 @@ For a video sample: `mlx_whisper "/path/to/clip.mp4" -f txt -o . --model mlx-com
 
 ```bash
 source ~/md-convert-env/bin/activate
-./convert_to_markdown.sh "/path/to/project" "/path/to/output"
-FORCE=1 ./convert_to_markdown.sh "/path/to/project" "/path/to/output"   # reconvert everything
+convert-to-markdown "/path/to/project" "/path/to/output"
+convert-to-markdown --force "/path/to/project" "/path/to/output"   # reconvert everything
 ```
 
-Output mirrors your folder structure, and each file becomes `<full name>.md` (so `hello.pdf` → `hello.pdf.md`, which makes collisions between same-named files of different types impossible). The output folder must be **outside** the input folder (the script enforces this).
+Without editable installation, replace `convert-to-markdown` with `python convert_to_markdown.py`.
+
+Runtime settings are explicit CLI flags, with environment variables kept as fallbacks:
+
+```bash
+convert-to-markdown \
+  --whisper-model mlx-community/whisper-small-mlx \
+  --whisper-lang en \
+  --render-density 250 \
+  "/path/to/project" "/path/to/output"
+```
+
+Output mirrors your folder structure, and each file becomes `<full name>.md` (so `hello.pdf` → `hello.pdf.md`, which makes collisions between same-named files of different types impossible). The output folder must be **outside** the input folder (the converter enforces this).
 
 ## First run downloads a transcription model
 
@@ -147,18 +228,19 @@ The "unauthenticated requests to the HF Hub" message during download is harmless
 - **xlsm:** read as a normal xlsx (sheet data kept, macros ignored). **xlsb:** LibreOffice → xlsx first.
 - **rtf:** macOS `textutil` → HTML → markitdown.
 - **pages:** modern `.pages` is a zip bundle, so the embedded `QuickLook/Preview.pdf` is used (needs "Include preview in document" to have been on when saved — the default).
-- **json:** pretty-printed inside a fenced block (still fully searchable).
-- **url:** the shortcut's `URL=` line becomes a Markdown link.
+- **json:** gets a Markdown summary (valid/invalid, top-level type, key/item counts) plus formatted JSON or raw preserved contents.
+- **txt:** wrapped in a Markdown document with fenced text content. Existing `.md` / `.markdown` files are copied unchanged.
+- **url:** parsed as an Internet Shortcut when possible; the URL becomes a Markdown link, host/scheme and shortcut fields are listed, and raw contents are preserved.
 - **jpg / jpeg / png:** the image is copied next to its `.md` and **embedded** (`![name](<name>)`), plus a dimensions line, **EXIF photo metadata** (capture date, camera, GPS — if exiftool is installed), and OCR'd text (tesseract). The embedded image lets Claude *see* it at query time.
 - **tif / tiff / heic / heif / hei:** rendered to one PNG per page/frame when the local tools expose multiple images, then embedded in Markdown with metadata and OCR per render.
 - **svg:** embedded the same way, plus a **rendered companion PNG** (if librsvg is installed, so Claude sees it as a picture) and extracted text labels.
 - **ai / eps:** rendered to one PNG per page/artboard when ImageMagick/Ghostscript can read the file, then OCR'd. Illustrator text saved as outlines may only be searchable through OCR.
-- **psd:** renders every composite/layer scene ImageMagick exposes, with metadata and OCR per render. Layer names and editable layer structure are not guaranteed; export a layered design to PDF/SVG/PNG from Photoshop when exact semantics matter.
-- **xd / fig:** copied next to a generated Markdown note. The script tries to render every locally visible page/frame, and if the file is a zip-readable package, extracts a structured design summary from JSON-like internals (`.json`, `.agc`, etc.): text strings, named objects/frames/components, colors, asset references, embedded package image assets, package inventory, and bounded raw snippets for traceability. For full design fidelity, export from the source app as PDF, PNG, SVG, or HTML and rerun the converter.
-- **one / onetoc2:** OneNote files are proprietary binary notebook containers. The script writes a Markdown note explaining the limitation; export the notebook or section from OneNote as PDF, DOCX, or HTML for full text conversion.
+- **psd:** renders every composite/layer scene ImageMagick exposes, with metadata and OCR per render. If the `design` Python extra is installed, it also extracts a bounded PSD layer inventory with layer names, visibility, type, and geometry when `psd-tools` can read the file. For full design fidelity, add same-basename PDF/SVG/PNG/HTML exports next to the PSD; the Markdown calls out detected companion exports.
+- **xd / fig:** copied next to a generated Markdown note. The converter tries to render every locally visible page/frame, and if the file is a zip-readable package, extracts a structured design summary from JSON-like internals (`.json`, `.agc`, etc.): text strings, named objects/frames/components, colors, asset references, embedded package image assets, package inventory, and bounded raw snippets for traceability. The Markdown also lists best-fidelity export alternatives and detects same-basename PDF/SVG/PNG/JPG/HTML companion exports.
+- **one / onetoc2:** OneNote files are proprietary binary notebook containers. The converter writes a Markdown note explaining the limitation; export the notebook or section from OneNote as PDF, DOCX, or HTML for full text conversion.
 - **otf / ttf / ttc:** metadata only (family, style, version, glyph count) — fonts hold glyph outlines, not document text.
 - **Audio/Video** — mp4, mov, m4v, mkv, avi, webm, mp3, m4a, wav, aac, flac: transcribed on-device with `mlx-whisper`. Silent clips (no audio stream) get a short stub instead of erroring.
-- **zip:** extracted to a temp dir, then converted recursively into a folder named after the archive (e.g. `archive.zip/`), preserving internal structure and handling nested zips.
+- **zip:** safely extracted to a temp dir, then converted recursively into a folder named after the archive (e.g. `archive.zip/`), preserving internal structure and handling nested zips. Extraction rejects path traversal, symlink entries, encrypted entries, and archives that exceed member/expanded-size safety limits; macOS zip metadata is skipped.
 
 A converted image `.md` looks like:
 
@@ -177,19 +259,25 @@ A converted image `.md` looks like:
 
 Re-running is cheap and safe. Change detection is by **content hash** — there is no timestamp mode.
 
-- **How it works.** On every run each source file is hashed (SHA-256) and compared with the hash recorded from its last successful conversion. Those hashes are stored in `.convert_hashes` at the root of the output folder. A file is converted only when its output is missing or empty, or its content has actually changed (shown as `-> path`); otherwise it is skipped (`== path (unchanged, skipped)`). Zips are checked at the archive level — skipped if unchanged, wiped and cleanly re-extracted if changed.
+- **How it works.** On every run each source file is hashed (SHA-256) and compared with the hash recorded from its last successful conversion. Those hashes are stored in `.convert_hashes` at the root of the output folder. A file is converted only when its output is missing or empty, or its content has actually changed (shown as `-> path`); otherwise it is skipped (`== path (unchanged, skipped)`). Zips are checked at the archive level — skipped if unchanged after a fully successful recursive conversion, wiped and cleanly re-extracted if changed.
 - **Why hashing, not timestamps.** Modification times are unreliable: copying, syncing, restoring from backup, or unzipping all reset them, which would otherwise force a needless full reconvert. Hashing ignores mtime entirely and reconverts strictly on real content change, so detection stays correct even after you move or re-sync the whole project.
-- **Trade-off.** Every file is read in full to hash it on each run, so large media are re-hashed each run. That is still far cheaper than re-transcribing them, and only changed files are actually reconverted. (`shasum` ships with macOS and is required; if neither `shasum` nor `sha256sum` is found, the script warns and falls back to reconverting everything each run.)
+- **Trade-off.** Every file is read in full to hash it on each run, so large media are re-hashed each run. That is still far cheaper than re-transcribing them, and only changed files are actually reconverted. Hashing is handled inside Python with SHA-256, so no `shasum` or `sha256sum` command is required.
 - **Atomic writes.** Each `.md` is built in a temp file and renamed into place only on success, so an interrupted run never leaves a half-written output that a later run mistakes for finished.
 - **Deletes partial/failed output.** On any failure (nonzero exit *or* a zero-byte file) the `.md` is removed, so it retries next run while completed files keep skipping. A real failure also surfaces the underlying tool's own message (e.g. markitdown's "include the optional dependency `[xls]`").
-- **Force a full rebuild:** `FORCE=1 ./convert_to_markdown.sh in out` reconverts everything and rewrites the manifest.
+- **Archive retry behavior.** An archive hash is recorded only after all inner conversions finish without failures. If a file inside an archive fails, the archive is retried on the next run even when the zip bytes are unchanged.
+- **Force a full rebuild:** `convert-to-markdown --force in out` reconverts everything and rewrites the manifest. `FORCE=1` is still accepted for existing scripts, but `--force` is preferred for normal use.
 
 ## Detailed end-of-run report
 
 Each run ends with counts and the full lists of skipped and failed files, with reasons:
 
 ```
-================= Summary =================
+================= Conversion report =================
+When:    Tue Jun 30 14:05:12 2026
+Source:  /path/to/project
+Output:  /path/to/output
+Mode:    content-hash
+
 Converted: 4
 Skipped:   1
 Failed:    2
@@ -198,23 +286,21 @@ Skipped files (1):
   == Docs/weird.xyz (unsupported .xyz)
 
 Failed files (2):
-  !! Docs/bundle.zip/inner/bad.ppt (needs LibreOffice (brew install --cask libreoffice))
-  !! Docs/broken.doc (needs LibreOffice (brew install --cask libreoffice))
-
-Output: /path/to/output
+  !! Docs/bundle.zip/inner/bad.ppt (needs LibreOffice: brew install --cask libreoffice [missing_tool])
+  !! Docs/bundle.zip (archive contains failed conversions [archive_child_failure])
 ```
 
-Skipped reasons: unchanged / unsupported / archive unchanged. Failed reasons: needs LibreOffice, no embedded preview, empty output, transcription failed, unzip failed. Files inside an archive are shown with their full path so you can find them. The same report is also saved to `_conversion_report.txt` in the output folder, so the full lists survive even when they scroll past in the terminal.
+Skipped reasons: unchanged / unsupported / archive unchanged. Failed reasons include structured error codes such as `missing_tool`, `external_command_failed`, `empty_output`, `unsafe_archive`, `archive_extraction_failed`, `archive_child_failure`, `embedded_preview_missing`, and `transcription_failed`. Files inside an archive are shown with their full path so you can find them. The same information is saved as typed JSON in `_conversion_report.json`, so the full lists survive even when they scroll past in the terminal and can be consumed by automation.
 
 ## Safety checks
 
-The script fails fast or warns on common mistakes: it errors if the input folder is missing or if the **output folder is inside the input** (which would otherwise re-ingest its own `.md` output); it prints a **preflight heads-up** listing any missing tools; LibreOffice conversions use an **isolated profile**, so `.doc`/`.ppt`/`.xlsb` still convert even when you have the LibreOffice app open; **hidden/dot directories** (`.git`, `.vscode`, `.DS_Store`, macOS zip cruft, etc.) are pruned rather than converted; and each `.md` is written to a temp file and **atomically renamed** into place, so an interrupted run never leaves a half-written output that later gets mistaken for "done."
+The converter fails fast or warns on common mistakes: it errors if the input folder is missing or if the **output folder is inside the input** (which would otherwise re-ingest its own `.md` output); it prints a **preflight heads-up** listing missing required tools and optional helpers for the extensions found in the current corpus; LibreOffice conversions use an **isolated profile**, so `.doc`/`.ppt`/`.xlsb` still convert even when you have the LibreOffice app open; **hidden/dot directories** (`.git`, `.vscode`, `.DS_Store`, macOS zip cruft, etc.) are pruned rather than converted; zip extraction rejects unsafe paths; and each `.md` is written to a temp file and **atomically renamed** into place, so an interrupted run never leaves a half-written output that later gets mistaken for "done."
 
-A few edge cases are knowingly left as-is: a *failure inside an unchanged archive* isn't retried unless the archive changes or you pass `FORCE=1`; interrupting a *transcription* with Ctrl-C may leave a stray `.txt` in the output (harmless, not re-ingested); old bundle-style `.pages` (a folder rather than a single file) isn't handled; symlinked files are not followed; and **deleted or renamed source files leave their old `.md` orphaned** in the output (the tool only adds and updates — it never deletes outputs for sources that vanished). If your corpus churns and you want orphans cleaned, that can be added as an opt-in `CLEAN=1` pass.
+A few edge cases are knowingly left as-is: interrupting a *transcription* with Ctrl-C may leave a stray `.txt` in the output (harmless, not re-ingested); old bundle-style `.pages` (a folder rather than a single file) isn't handled; symlinked files are not followed; and **deleted or renamed source files leave their old `.md` orphaned** in the output (the tool only adds and updates — it never deletes outputs for sources that vanished). If your corpus churns and you want orphans cleaned, that can be added as an opt-in clean pass.
 
 ## Caveats
 
-- **Transcription speed scales with your chip.** A base M1 runs roughly real-time (a 10-minute clip ≈ 10 minutes); newer chips are several times faster. On an 8 GB Air, set the model to `mlx-community/whisper-small-mlx` (top of the script) if you hit memory pressure.
+- **Transcription speed scales with your chip.** A base M1 runs roughly real-time (a 10-minute clip ≈ 10 minutes); newer chips are several times faster. On an 8 GB Air, use `--whisper-model mlx-community/whisper-small-mlx` if you hit memory pressure.
 - **Non-speech audio** (e.g. race footage with only engine noise) won't crash but yields little or garbled text — glance at those transcripts.
 - **PowerPoint speaker notes are dropped** by markitdown — extract separately if your decks depend on them.
 - **Scanned / image-only PDFs** come out nearly empty (markitdown's only OCR path is a paid LLM). Free local fix: `brew install ocrmypdf`, then `ocrmypdf in.pdf out.pdf` before converting.
@@ -266,7 +352,26 @@ Upload the Markdown (and the copied image files) into a Project's knowledge base
 
 ---
 
-# Part 4 — Why this design (background)
+# Part 4 — Architecture and Design Rationale
+
+## Converter capability model
+
+Adding a format should be a small, predictable change:
+
+1. Add or update a `ConverterCapability` in `markdown_converter/capabilities.py`.
+2. Point that capability at a handler method implemented under `markdown_converter/handlers/`.
+3. Return `ConverterResult.failed(...)` with a `ConversionErrorCode` for failures.
+4. Add or adjust README format behavior and a focused fixture.
+
+This keeps format support discoverable and prevents extension lists, preflight warnings, and dispatch logic from drifting apart.
+
+## Operational guarantees
+
+- Completed files are skipped by content hash, not timestamp.
+- Outputs are written through `.partial` files and atomically renamed into place.
+- Failed or empty outputs are removed so the next run retries them.
+- Archive hashes are recorded only after all inner conversions succeed.
+- The converter never deletes orphaned outputs for removed source files unless a future explicit clean mode is added.
 
 ## You don't need RAG or skills for this
 
@@ -304,16 +409,31 @@ Lowest tokens (RAG) and highest accuracy (full context) pull in opposite directi
 
 ---
 
-# Part 5 — Tuning & toggles
+# Part 5 — Operations and Maintenance
 
 These started as optional add-ons and are now built in:
 
 - **EXIF / photo metadata** — automatic when `exiftool` is installed (`brew install exiftool`); adds capture date, camera, and GPS to photo `.md` files.
 - **SVG rasterization** — automatic when `librsvg` is installed (`brew install librsvg`); renders a companion PNG per SVG so Claude sees diagrams as pictures, not just XML.
 - **Content-hash change detection** — always on. Each run hashes every source (SHA-256), stores the hashes in `.convert_hashes`, and reconverts only changed or missing files. See *Change detection* above for the trade-off.
-- **Report file** — always written to `_conversion_report.txt` in the output folder, in addition to the terminal.
+- **Report file** — always written to `_conversion_report.json` in the output folder, in addition to the terminal summary.
 
-Still genuinely optional (ask if you want them): OCR language packs for non-English images (`brew install tesseract-lang`, then set a language in the script), or a `CLEAN=1` pass that deletes outputs whose source was removed or renamed.
+## Developer checks
+
+Run these before committing converter changes:
+
+```bash
+python3 -m compileall -q markdown_converter convert_to_markdown.py
+git --no-pager diff --check -- README.md REPRODUCIBILITY.md pyproject.toml markdown_converter
+```
+
+For behavior changes, add a temporary fixture that exercises the touched path: unchanged skip, `--force`, unsafe zip rejection, archive retry, package extraction, or the specific format handler being edited.
+
+## Future useful additions
+
+- `--clean-orphans` to delete outputs whose source file was removed or renamed.
+- A pytest suite around registry dispatch, archive safety, manifest behavior, and built-in text/json/url conversions.
+- Optional OCR language settings for non-English image text (`brew install tesseract-lang`).
 
 ---
 
