@@ -1,0 +1,51 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Virtual environments and local Python tooling
+.venv/
+venv/
+env/
+ENV/
+md-convert-env/
+pip-wheel-metadata/
+*.egg-info/
+
+# Local editor/project metadata
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.partial
+.tmp/
+tmp/
+temp/
+
+# Markdown converter output artifacts
+.convert_hashes
+_conversion_report.json
+*.assets/
+out/
+output/
+outputs/
+converted/
+converted_markdown/
+markdown_output/
