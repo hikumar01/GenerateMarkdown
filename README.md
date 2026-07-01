@@ -91,7 +91,23 @@ pip install -e '.[apple-silicon-transcription,design]'
 
 The Python dependencies live in `pyproject.toml`. For a smaller install without audio transcription or PSD layer inspection, use `pip install -e .`.
 
-For repeatable installs, see `REPRODUCIBILITY.md`. The project uses `pyproject.toml` as the dependency source of truth and documents how to generate a per-machine `requirements-lock.txt` from a clean environment.
+For repeatable installs, `pyproject.toml` remains the dependency source of truth. The project does not commit a universal lock file because optional audio/design dependencies are platform-sensitive: Apple Silicon users normally install `mlx-whisper`, Intel users may choose `openai-whisper`, and some conversion quality comes from Homebrew tools rather than Python packages. To pin one machine exactly, generate a local lock from a clean environment:
+
+```bash
+python -m pip freeze --local > requirements-lock.txt
+```
+
+To recreate that exact Python environment later:
+
+```bash
+python3.13 -m venv ~/md-convert-env
+source ~/md-convert-env/bin/activate
+pip install --upgrade pip
+pip install -r requirements-lock.txt
+pip install -e . --no-deps
+```
+
+Keep the generated `requirements-lock.txt` with your converted corpus or automation if exact repeatability matters.
 
 ## Step 5 — The converter
 
@@ -138,7 +154,6 @@ source ~/md-convert-env/bin/activate
 
 ```text
 pyproject.toml              # package metadata, dependencies, extras, console script
-REPRODUCIBILITY.md          # repeatable install policy and lock-generation workflow
 convert_to_markdown.py      # Python CLI entrypoint
 markdown_converter/         # conversion package
   archive.py                # safe zip extraction policy
@@ -424,7 +439,7 @@ Run these before committing converter changes:
 
 ```bash
 python3 -m compileall -q markdown_converter convert_to_markdown.py
-git --no-pager diff --check -- README.md REPRODUCIBILITY.md pyproject.toml markdown_converter
+git --no-pager diff --check -- README.md pyproject.toml markdown_converter
 ```
 
 For behavior changes, add a temporary fixture that exercises the touched path: unchanged skip, `--force`, unsafe zip rejection, archive retry, package extraction, or the specific format handler being edited.
